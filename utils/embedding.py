@@ -2,9 +2,11 @@
 Embedding utilities for processing and generating embeddings using OpenAI API.
 """
 
+import json
+import pickle
 import openai
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 class EmbeddingProcessor:
     """Class for handling text embeddings and similarity search."""
@@ -81,3 +83,51 @@ class EmbeddingProcessor:
     def get_available_models(cls) -> Dict[str, str]:
         """Get dictionary of available embedding models and their descriptions."""
         return cls.AVAILABLE_MODELS.copy()
+        
+    def save_embeddings(self, file_path: str, format: str = 'pickle') -> None:
+        """Save embeddings and texts to a file.
+        
+        Args:
+            file_path: Path to save the embeddings file
+            format: 'pickle' or 'json' format for saving
+        """
+        data = {
+            'embeddings': self.embeddings,
+            'texts': self.texts,
+            'model': self.model
+        }
+        
+        try:
+            if format == 'pickle':
+                with open(file_path, 'wb') as f:
+                    pickle.dump(data, f)
+            elif format == 'json':
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f)
+            else:
+                raise ValueError("Format must be either 'pickle' or 'json'")
+        except Exception as e:
+            raise ValueError(f"Error saving embeddings: {e}")
+    
+    def load_embeddings(self, file_path: str, format: str = 'pickle') -> None:
+        """Load embeddings and texts from a file.
+        
+        Args:
+            file_path: Path to the embeddings file
+            format: 'pickle' or 'json' format for loading
+        """
+        try:
+            if format == 'pickle':
+                with open(file_path, 'rb') as f:
+                    data = pickle.load(f)
+            elif format == 'json':
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            else:
+                raise ValueError("Format must be either 'pickle' or 'json'")
+            
+            self.embeddings = data['embeddings']
+            self.texts = data['texts']
+            self.model = data['model']
+        except Exception as e:
+            raise ValueError(f"Error loading embeddings: {e}")
