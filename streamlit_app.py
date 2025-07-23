@@ -72,45 +72,193 @@ elif uploaded_file is not None:
             st.info(install_ifcopenshell_message())
 
 if data:
-    # Add download button for processed IFC data
-    if data.get('file_info', {}).get('type') == 'IFC':
-        try:
-            processor = IFCProcessor()
-            json_string = processor.get_json_string(data)
-            
-            # Generate filename for download
-            original_name = data.get('file_info', {}).get('name', 'processed_ifc')
-            if original_name.endswith('.ifc'):
-                download_filename = original_name.replace('.ifc', '_processed.json')
-            else:
-                download_filename = f"{original_name}_processed.json"
-            
-            st.download_button(
-                label="📥 Download Processed Data as JSON",
-                data=json_string,
-                file_name=download_filename,
-                mime="application/json",
-                help="Download the processed IFC data in JSON format"
-            )
-        except Exception as e:
-            st.error(f"Error preparing download: {e}")
+    # Create tabs for different views of the data
+    tab_overview, tab_elements, tab_download, tab_embeddings = st.tabs([
+        "Overview", "Building Elements", "Download", "Embeddings"
+    ])
     
-    st.json(data)
+    with tab_overview:
+        st.subheader("File Information")
+        
+        if data.get('file_info', {}).get('type') == 'IFC':
+            # For IFC files
+            file_info = data.get('file_info', {})
+            st.write(f"**File Name:** {file_info.get('name', 'Unknown')}")
+            if 'size' in file_info:
+                st.write(f"**File Size:** {file_info['size']/1024:.2f} KB")
+            st.write(f"**Total Elements:** {data.get('summary', {}).get('total_elements', 0)}")
+            
+            st.subheader("Element Types Found")
+            for element_type in data.get('summary', {}).get('element_types', []):
+                st.write(f"- {element_type}")
+        else:
+            # For JSON files
+            if isinstance(data, dict):
+                st.write("**Structure:** Dictionary")
+                st.write(f"**Number of Keys:** {len(data)}")
+                st.write("**Top-level Keys:**")
+                for key in data.keys():
+                    st.write(f"- {key}")
+            elif isinstance(data, list):
+                st.write("**Structure:** List")
+                st.write(f"**Number of Items:** {len(data)}")
+            
+            st.subheader("Data Preview")
+            st.json(data)
 
-    # Extract elements for embedding
-    elements = data.get("elements", [])
-    texts = []
-    for el in elements:
-        props = el.get("properties", {})
-        text = f"{el.get('type', '')} {el.get('name', '')} " \
-               f"Height: {props.get('OverallHeight', {}).get('value', '')} " \
-               f"Width: {props.get('OverallWidth', {}).get('value', '')}"
-        texts.append(text)
+    with tab_elements:
+        if data.get('file_info', {}).get('type') == 'IFC':
+            st.subheader("Building Elements")
+            
+            elements = data.get('elements', [])
+            if not elements:
+                st.warning("No elements found in the IFC file.")
+                st.stop()
+            
+            # Add element type filter
+            element_types = data.get('summary', {}).get('element_types', [])
+            selected_type = st.selectbox("Filter by Element Type", ["All"] + element_types)
+            
+            # Add search box
+            search_query = st.text_input("Search elements", "")
+            
+            # Count elements for statistics
+            filtered_count = 0
+            
+            # Display elements with filtering and search
+            for element in elements:
+                try:
+                    if (selected_type == "All" or element.get('type') == selected_type) and \
+                       (not search_query or search_query.lower() in str(element).lower()):
+                        filtered_count += 1
+                        with st.expander(f"{element.get('type', 'Unknown')} - {element.get('name', 'Unnamed')}"):
+                            st.write("**ID:** ", element.get('id', 'No ID'))
+                            if element.get('description'):
+                                st.write("**Description:** ", element['description'])
+                            
+                            # Display properties in a more organized way
+                            if element.get('properties'):
+                                for ps_name, properties in element['properties'].items():
+                                    st.write(f"**{ps_name}**")
+                                    for prop_name, prop_data in properties.items():
+                                        value = prop_data.get('value', '')
+                                        unit = prop_data.get('unit', '')
+                                        if value is not None:  # Allow 0 values
+                                            st.write(f"- {prop_name}: {value} {unit if unit else ''}")
+                            else:
+                                st.info("No properties found for this element.")
+                            
+                            # Display geometry information
+                            if element.get('geometry'):
+                                st.write("**Geometry Information:**")
+                                for geo_key, geo_value in element['geometry'].items():
+                                    st.write(f"- {geo_key}: {geo_value}")
+                except Exception as e:
+                    st.error(f"Error displaying element: {str(e)}")
+                    continue
+            
+            # Show statistics
+            st.sidebar.write(f"Showing {filtered_count} of {len(elements)} elements")
+            
+        else:
+            # For JSON data, show structured view
+            st.subheader("JSON Data Explorer")
+            
+            if isinstance(data, dict):
+                # For dictionary data
+                search_query = st.text_input("Search in JSON", "")
+                for key, value in data.items():
+                    if not search_query or search_query.lower() in str(key).lower() or search_query.lower() in str(value).lower():
+                        with st.expander(f"Key: {key}"):
+                            st.json(value)
+            elif isinstance(data, list):
+                # For list data
+                search_query = st.text_input("Search in list items", "")
+                for i, item in enumerate(data):
+                    if not search_query or search_query.lower() in str(item).lower():
+                        with st.expander(f"Item {i+1}"):
+                            st.json(item)
+            else:
+                st.json(data)
+    
+    with tab_download:
+        if data.get('file_info', {}).get('type') == 'IFC':
+            try:
+                processor = IFCProcessor()
+                json_string = processor.get_json_string(data)
+                
+                # Generate filename for download
+                original_name = data.get('file_info', {}).get('name', 'processed_ifc')
+                if original_name.endswith('.ifc'):
+                    download_filename = original_name.replace('.ifc', '_processed.json')
+                else:
+                    download_filename = f"{original_name}_processed.json"
+                
+                st.write("### Download Processed IFC Data")
+                st.write("Download the processed IFC data in JSON format for use in other applications.")
+                st.download_button(
+                    label="📥 Download as JSON",
+                    data=json_string,
+                    file_name=download_filename,
+                    mime="application/json",
+                    help="Download the processed IFC data in JSON format"
+                )
+                
+                # Show preview of the JSON
+                st.write("### JSON Preview")
+                st.json(data)
+            except Exception as e:
+                st.error(f"Error preparing download: {e}")
+        else:
+            st.json(data)
 
-    # Show extracted texts
-    st.write("Texts to embed:")
-    for t in texts:
-        st.write(t)
+    # Create embeddings tab
+    tab_embeddings = st.tabs(["Embeddings"])[0]
+    with tab_embeddings:
+        st.subheader("Text Embeddings")
+        st.write("Convert building elements to text descriptions for embedding and semantic search.")
+        
+        if data.get('file_info', {}).get('type') == 'IFC':
+            try:
+                processor = IFCProcessor()
+                texts = processor.convert_to_text_chunks(data)
+                
+                # Show a sample of texts with expanders
+                st.write("### Text Descriptions")
+                st.write("Below are the text descriptions that will be used for embeddings. Each description includes all available properties of the building element.")
+                
+                for i, text in enumerate(texts):
+                    with st.expander(f"Element {i+1}"):
+                        st.write(text)
+                
+            except Exception as e:
+                st.error(f"Error converting elements to text: {e}")
+        else:
+            # For JSON files, use the existing text extraction
+            elements = data.get("elements", [])
+            texts = []
+            for el in elements:
+                if isinstance(el, dict):
+                    text_parts = []
+                    # Include all available fields
+                    for key, value in el.items():
+                        if key != 'properties':  # Handle properties separately
+                            text_parts.append(f"{key}: {value}")
+                    
+                    # Handle properties if they exist
+                    props = el.get("properties", {})
+                    for prop_name, prop_value in props.items():
+                        text_parts.append(f"{prop_name}: {prop_value}")
+                    
+                    texts.append(" | ".join(text_parts))
+                else:
+                    texts.append(str(el))
+            
+            # Show texts in expanders
+            st.write("### Text Descriptions")
+            for i, text in enumerate(texts):
+                with st.expander(f"Element {i+1}"):
+                    st.write(text)
 
     # Embed using OpenAI (requires API key)
     openai_api_key = st.text_input("Enter your OpenAI API key:", type="password")
