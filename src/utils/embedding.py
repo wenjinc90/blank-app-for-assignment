@@ -78,6 +78,36 @@ class EmbeddingProcessor:
             'similarity_score': float(similarities[top_idx]),
             'index': top_idx
         }
+    
+    def find_top_similar(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+        """Find the top K most similar texts to a query."""
+        if not self.embeddings or not self.texts:
+            raise ValueError("No embeddings generated yet. Call generate_embeddings first.")
+
+        query_response = openai.embeddings.create(
+            input=query,
+            model=self.model
+        )
+        query_embedding = np.array(query_response.data[0].embedding)
+        doc_embeddings = np.array(self.embeddings)
+        
+        # Calculate similarities using dot product and normalization
+        similarities = np.dot(doc_embeddings, query_embedding) / (
+            np.linalg.norm(doc_embeddings, axis=1) * np.linalg.norm(query_embedding) + 1e-8
+        )
+        
+        # Get top K indices
+        top_indices = np.argsort(similarities)[::-1][:top_k]
+        
+        results = []
+        for idx in top_indices:
+            results.append({
+                'text': self.texts[idx],
+                'similarity_score': float(similarities[idx]),
+                'index': int(idx)
+            })
+        
+        return results
 
     @classmethod
     def get_available_models(cls) -> Dict[str, str]:
