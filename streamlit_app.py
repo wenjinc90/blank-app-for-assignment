@@ -1,9 +1,8 @@
 import streamlit as st
 import json
-import openai
-import numpy as np
 import os
 from utils.ifc_processing import IFCProcessor, check_ifcopenshell_installation, install_ifcopenshell_message
+from utils.embedding import EmbeddingProcessor
 
 st.title("🎈 My new app")
 st.write(
@@ -218,6 +217,26 @@ if data:
         st.subheader("Text Embeddings")
         st.write("Convert building elements to text descriptions for embedding and semantic search.")
         
+        # Initialize embedding processor
+        embedding_processor = EmbeddingProcessor()
+        
+        # Add model selection
+        embedding_models = embedding_processor.get_available_models()
+        selected_model = st.selectbox(
+            "Select Embedding Model:",
+            list(embedding_models.keys()),
+            index=0,
+            help="Choose the OpenAI embedding model to use"
+        )
+        st.info(f"Model Info: {embedding_models[selected_model]}")
+        
+        # Add OpenAI API Key input here
+        openai_api_key = st.text_input("Enter your OpenAI API key:", type="password")
+        
+        if openai_api_key:
+            embedding_processor.set_api_key(openai_api_key)
+            embedding_processor.set_model(selected_model)
+        
         if data.get('file_info', {}).get('type') == 'IFC':
             try:
                 processor = IFCProcessor()
@@ -260,37 +279,35 @@ if data:
                 with st.expander(f"Element {i+1}"):
                     st.write(text)
 
-    # Embed using OpenAI (requires API key)
-    openai_api_key = st.text_input("Enter your OpenAI API key:", type="password")
-    if openai_api_key and st.button("Generate Embeddings"):
-        openai.api_key = openai_api_key
-        embeddings = []
-        for t in texts:
-            response = openai.embeddings.create(
-                input=t,
-                model="text-embedding-ada-002"
-            )
-            embeddings.append(response.data[0].embedding)
-        st.success("Embeddings generated!")
-        st.write(embeddings)
-        st.session_state['embeddings'] = embeddings
-        st.session_state['texts'] = texts
+                # Generate embeddings button
+                if openai_api_key and st.button("Generate Embeddings"):
+                    try:
+                        # Show progress bar
+                        progress_bar = st.progress(0)
+                        
+                        # Generate embeddings with progress callback
+                        embeddings = embedding_processor.generate_embeddings(
+                            texts,
+                            progress_callback=progress_bar.progress
+                        )
+                        
+                        st.success(f"Embeddings generated using {selected_model}!")
+                        st.session_state['embeddings_processor'] = embedding_processor
+                        st.session_state['texts'] = texts
+                    except Exception as e:
+                        st.error(f"Error generating embeddings: {str(e)}")
 
 # Chatbot section
-if 'embeddings' in st.session_state and 'texts' in st.session_state:
+if 'embeddings_processor' in st.session_state and 'texts' in st.session_state:
     st.header("Chat with your JSON")
     user_query = st.text_input("Ask a question about your data:")
-    openai_api_key = st.session_state.get('openai_api_key', '')
-    if user_query and openai_api_key:
-        query_response = openai.embeddings.create(
-            input=user_query,
-            model="text-embedding-ada-002"
-        )
-        query_embedding = np.array(query_response.data[0].embedding)
-        doc_embeddings = np.array(st.session_state['embeddings'])
-        similarities = np.dot(doc_embeddings, query_embedding) / (
-            np.linalg.norm(doc_embeddings, axis=1) * np.linalg.norm(query_embedding) + 1e-8
-        )
-        top_idx = int(np.argmax(similarities))
-        st.write("Most relevant element:")
-        st.write(st.session_state['texts'][top_idx])
+    
+    if user_query:
+        try:
+            embedding_processor = st.session_state['embeddings_processor']
+            result = embedding_processor.find_most_similar(user_query)
+            st.write("Most relevant element:")
+            st.write(result['text'])
+            st.write(f"Similarity score: {result['similarity_score']:.2f}")
+        except Exception as e:
+            st.error(f"Error processing query: {str(e)}")
