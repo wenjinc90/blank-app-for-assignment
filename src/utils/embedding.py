@@ -57,6 +57,10 @@ class EmbeddingProcessor:
 
     def find_most_similar(self, query: str) -> Dict[str, Any]:
         """Find the most similar text to a query."""
+        return self.find_top_similar(query, top_k=1)[0]
+
+    def find_top_similar(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+        """Find the top K most similar texts to a query."""
         if not self.embeddings or not self.texts:
             raise ValueError("No embeddings generated yet. Call generate_embeddings first.")
 
@@ -72,12 +76,20 @@ class EmbeddingProcessor:
             np.linalg.norm(doc_embeddings, axis=1) * np.linalg.norm(query_embedding) + 1e-8
         )
         
-        top_idx = int(np.argmax(similarities))
-        return {
-            'text': self.texts[top_idx],
-            'similarity_score': float(similarities[top_idx]),
-            'index': top_idx
-        }
+        # Get top K indices
+        top_k = min(top_k, len(similarities))  # Make sure we don't exceed array length
+        top_indices = np.argsort(similarities)[::-1][:top_k]
+        
+        # Create result list
+        results = []
+        for idx in top_indices:
+            results.append({
+                'text': self.texts[idx],
+                'similarity_score': float(similarities[idx]),
+                'index': int(idx)
+            })
+        
+        return results
     
     def find_top_similar(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
         """Find the top K most similar texts to a query."""
