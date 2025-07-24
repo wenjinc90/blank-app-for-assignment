@@ -66,11 +66,24 @@ def main():
             st.subheader("Generate & Manage Embeddings")
             selected_model = EmbeddingsTab.render(embedding_processor)
             
-            # Process texts for embedding
-            texts = []
-            if data.get('file_info', {}).get('type') == 'IFC':
-                processor = IFCProcessor()
-                texts = processor.convert_to_text_chunks(data)
+            # Process texts for embedding (with caching)
+            if 'processed_texts' not in st.session_state:
+                st.session_state.processed_texts = {}
+            
+            # Generate a cache key from the file info
+            file_info = data.get('file_info', {})
+            cache_key = f"{file_info.get('name', '')}_{file_info.get('size', 0)}"
+            
+            # Only process if not in cache
+            if cache_key not in st.session_state.processed_texts:
+                texts = []
+                if file_info.get('type') == 'IFC':
+                    processor = IFCProcessor()
+                    texts = processor.convert_to_text_chunks(data)
+                    st.session_state.processed_texts[cache_key] = texts
+            
+            texts = st.session_state.processed_texts.get(cache_key, [])
+            if texts:
                 st.write(f"Found {len(texts)} elements to process")
                 
             EmbeddingsTab.process_and_generate(

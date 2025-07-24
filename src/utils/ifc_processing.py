@@ -23,6 +23,8 @@ class IFCProcessor:
                 "ifcopenshell is required for IFC processing. "
                 "Install it with: pip install ifcopenshell"
             )
+        # Cache for storing text chunks
+        self._text_chunks_cache = {}
     
     def load_ifc_file(self, file_path: str) -> Any:
         """Load an IFC file using ifcopenshell."""
@@ -46,7 +48,12 @@ class IFCProcessor:
             try:
                 ifc_elements = ifc_file.by_type(element_type)
                 for element in ifc_elements:
-                    element_data = self.extract_element_data(element)
+                    # Only extract basic info for initial loading
+                    element_data = self.extract_element_data(
+                        element, 
+                        include_properties=False,
+                        include_geometry=False
+                    )
                     if element_data:
                         elements.append(element_data)
             except Exception as e:
@@ -55,9 +62,16 @@ class IFCProcessor:
         
         return elements
     
-    def extract_element_data(self, element: Any) -> Dict:
-        """Extract relevant data from a single IFC element."""
+    def extract_element_data(self, element: Any, include_properties: bool = False, include_geometry: bool = False) -> Dict:
+        """Extract relevant data from a single IFC element.
+        
+        Args:
+            element: The IFC element to process
+            include_properties: Whether to include detailed property information
+            include_geometry: Whether to include geometry information
+        """
         try:
+            # Extract basic element data (fast)
             element_data = {
                 'id': getattr(element, 'GlobalId', str(element.id())),
                 'type': element.is_a(),
@@ -66,8 +80,8 @@ class IFCProcessor:
                 'properties': {}
             }
             
-            # Extract property sets
-            if hasattr(element, 'IsDefinedBy'):
+            # Only extract properties if requested (slow operation)
+            if include_properties and hasattr(element, 'IsDefinedBy'):
                 for definition in element.IsDefinedBy:
                     if definition.is_a('IfcRelDefinesByProperties'):
                         property_set = definition.RelatingPropertyDefinition
@@ -84,8 +98,9 @@ class IFCProcessor:
                                         'unit': getattr(prop.NominalValue, 'Unit', None) if prop.NominalValue else None
                                     }
             
-            # Extract geometric properties if available
-            element_data['geometry'] = self.extract_geometry_info(element)
+            # Only extract geometry if requested (slow operation)
+            if include_geometry:
+                element_data['geometry'] = self.extract_geometry_info(element)
             
             return element_data
             
@@ -116,6 +131,10 @@ class IFCProcessor:
             
         return geometry
     
+    def clear_cache(self):
+        """Clear the text chunks cache."""
+        self._text_chunks_cache = {}
+
     def process_uploaded_ifc(self, uploaded_file) -> Dict:
         """Process an uploaded IFC file from Streamlit file uploader."""
         try:
@@ -175,38 +194,68 @@ class IFCProcessor:
         except Exception as e:
             raise ValueError(f"Error processing sample IFC file: {e}")
     
-    def convert_to_text_chunks(self, processed_data: Dict) -> List[str]:
-        """Convert processed IFC data to text chunks suitable for embedding."""
-        texts = []
+    def convert_to_text_chunks(self, processed_data: Dict, batch_size: int = 100, use_cache: bool = True) -> List[str]:
+        """Convert processed IFC data to text chunks suitable for embedding.
         
-        for element in processed_data.get('elements', []):
-            # Create a descriptive text for each element
-            text_parts = []
+        Args:
+            processed_data: The processed IFC data
+            batch_size: Number of elements to process at once to reduce memory usage
+            use_cache: Whether to use cached chunks if available
+        """
+        # Generate a cache key from file info
+        file_info = processed_data.get('file_info', {})
+        cache_key = f"{file_info.get('name', '')}_{file_info.get('size', 0)}"
+        
+        # Return cached chunks if available and cache is enabled
+        if use_cache and cache_key in self._text_chunks_cache:
+            return self._text_chunks_cache[cache_key]
             
-            # Basic element info
-            text_parts.append(f"Element Type: {element.get('type', 'Unknown')}")
+        texts = []
+        elements = processed_data.get('elements', [])
+        
+        # Process elements in batches to reduce memory pressure
+        for i in range(0, len(elements), batch_size):
+            batch = elements[i:i + batch_size]
             
-            if element.get('name'):
-                text_parts.append(f"Name: {element.get('name')}")
-            
-            if element.get('description'):
-                text_parts.append(f"Description: {element.get('description')}")
-            
-            # Add properties
-            for ps_name, properties in element.get('properties', {}).items():
-                text_parts.append(f"Property Set: {ps_name}")
-                for prop_name, prop_data in properties.items():
-                    value = prop_data.get('value', '')
-                    unit = prop_data.get('unit', '')
-                    if value:
-                        prop_text = f"{prop_name}: {value}"
-                        if unit:
-                            prop_text += f" {unit}"
-                        text_parts.append(prop_text)
-            
-            # Combine all parts
-            element_text = " | ".join(text_parts)
-            texts.append(element_text)
+            for element in batch:
+                # Create a descriptive text for each element
+                text_parts = []
+                
+                # Only include essential information to reduce processing time
+                text_parts.append(f"Element Type: {element.get('type', 'Unknown')}")
+                
+                if element.get('name'):
+                    text_parts.append(f"Name: {element.get('name')}")
+                
+                # Skip description if empty to reduce string operations
+                description = element.get('description')
+                if description:
+                    text_parts.append(f"Description: {description}")
+                
+                # For properties, only include key information
+                for ps_name, properties in element.get('properties', {}).items():
+                    # Skip empty property sets
+                    if not properties:
+                        continue
+                        
+                    text_parts.append(f"Property Set: {ps_name}")
+                    # Only process non-empty values to reduce string operations
+                    for prop_name, prop_data in properties.items():
+                        value = prop_data.get('value')
+                        if value:
+                            unit = prop_data.get('unit', '')
+                            prop_text = f"{prop_name}: {value}"
+                            if unit:
+                                prop_text += f" {unit}"
+                            text_parts.append(prop_text)
+                
+                # Join parts efficiently
+                element_text = " | ".join(text_parts)
+                texts.append(element_text)
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            self._text_chunks_cache[cache_key] = texts
         
         return texts
     
@@ -230,9 +279,21 @@ class IFCProcessor:
         except Exception as e:
             raise ValueError(f"Error saving JSON file: {e}")
     
-    def get_json_string(self, processed_data: Dict) -> str:
-        """Convert processed IFC data to JSON string for download."""
+    def get_json_string(self, processed_data: Dict, compact: bool = True) -> str:
+        """Convert processed IFC data to JSON string for download.
+        
+        Args:
+            processed_data: The data to convert to JSON
+            compact: If True, uses a more compact JSON format to reduce size
+        """
         try:
+            if compact:
+                # Use compact format without indentation for better performance
+                return json.dumps(
+                    processed_data,
+                    ensure_ascii=False,
+                    separators=(',', ':')  # Remove whitespace
+                )
             return json.dumps(processed_data, indent=2, ensure_ascii=False)
         except Exception as e:
             raise ValueError(f"Error converting to JSON string: {e}")
