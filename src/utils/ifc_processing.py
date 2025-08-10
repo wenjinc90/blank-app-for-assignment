@@ -48,10 +48,10 @@ class IFCProcessor:
             try:
                 ifc_elements = ifc_file.by_type(element_type)
                 for element in ifc_elements:
-                    # Only extract basic info for initial loading
+                    # Changed to include_properties=True
                     element_data = self.extract_element_data(
                         element, 
-                        include_properties=False,
+                        include_properties=True,  # Set to True to extract properties
                         include_geometry=False
                     )
                     if element_data:
@@ -195,65 +195,62 @@ class IFCProcessor:
             raise ValueError(f"Error processing sample IFC file: {e}")
     
     def convert_to_text_chunks(self, processed_data: Dict, batch_size: int = 100, use_cache: bool = True) -> List[str]:
-        """Convert processed IFC data to text chunks suitable for embedding.
-        
-        Args:
-            processed_data: The processed IFC data
-            batch_size: Number of elements to process at once to reduce memory usage
-            use_cache: Whether to use cached chunks if available
-        """
-        # Generate a cache key from file info
+        """Convert processed IFC data to text chunks suitable for embedding."""
+        # Generate cache key
         file_info = processed_data.get('file_info', {})
         cache_key = f"{file_info.get('name', '')}_{file_info.get('size', 0)}"
         
-        # Return cached chunks if available and cache is enabled
         if use_cache and cache_key in self._text_chunks_cache:
             return self._text_chunks_cache[cache_key]
             
         texts = []
         elements = processed_data.get('elements', [])
         
-        # Process elements in batches to reduce memory pressure
         for i in range(0, len(elements), batch_size):
             batch = elements[i:i + batch_size]
             
             for element in batch:
-                # Create a descriptive text for each element
                 text_parts = []
                 
-                # Only include essential information to reduce processing time
+                # Basic element information
                 text_parts.append(f"Element Type: {element.get('type', 'Unknown')}")
+                text_parts.append(f"ID: {element.get('id', 'Unknown')}")
+                text_parts.append(f"Global ID: {element.get('globalId', 'Unknown')}")
                 
                 if element.get('name'):
                     text_parts.append(f"Name: {element.get('name')}")
                 
-                # Skip description if empty to reduce string operations
-                description = element.get('description')
-                if description:
-                    text_parts.append(f"Description: {description}")
+                if element.get('description'):
+                    text_parts.append(f"Description: {element.get('description')}")
                 
-                # For properties, only include key information
+                # Include ALL properties
                 for ps_name, properties in element.get('properties', {}).items():
-                    # Skip empty property sets
-                    if not properties:
-                        continue
-                        
-                    text_parts.append(f"Property Set: {ps_name}")
-                    # Only process non-empty values to reduce string operations
-                    for prop_name, prop_data in properties.items():
-                        value = prop_data.get('value')
-                        if value:
-                            unit = prop_data.get('unit', '')
-                            prop_text = f"{prop_name}: {value}"
-                            if unit:
-                                prop_text += f" {unit}"
-                            text_parts.append(prop_text)
+                    if isinstance(properties, dict):
+                        # Handle nested property structure
+                        for prop_name, prop_data in properties.items():
+                            if isinstance(prop_data, dict):
+                                value = prop_data.get('value')
+                                unit = prop_data.get('unit', '')
+                                prop_type = prop_data.get('type', '')
+                                
+                                if value is not None:
+                                    prop_text = f"{ps_name} - {prop_name}: {value}"
+                                    if unit:
+                                        prop_text += f" {unit}"
+                                    if prop_type:
+                                        prop_text += f" (Type: {prop_type})"
+                                    text_parts.append(prop_text)
+                            else:
+                                # Direct property value
+                                text_parts.append(f"{ps_name} - {prop_name}: {prop_data}")
+                    else:
+                        # Direct property set value
+                        text_parts.append(f"{ps_name}: {properties}")
                 
-                # Join parts efficiently
-                element_text = " | ".join(text_parts)
+                # Join all information with separators
+                element_text = " | ".join(filter(None, text_parts))
                 texts.append(element_text)
         
-        # Store in cache if caching is enabled
         if use_cache:
             self._text_chunks_cache[cache_key] = texts
         
@@ -297,6 +294,82 @@ class IFCProcessor:
             return json.dumps(processed_data, indent=2, ensure_ascii=False)
         except Exception as e:
             raise ValueError(f"Error converting to JSON string: {e}")
+    
+    @staticmethod
+    def process_ifc(ifc_file) -> Dict[str, Any]:
+        """Process an IFC file and extract all available parameters."""
+        ifc = ifcopenshell.open(ifc_file)
+        elements = []
+
+        for entity in ifc:
+            if hasattr(entity, 'is_a') and not entity.is_a('IfcRelationship'):
+                element_data = {
+                    'id': entity.id(),
+                    'type': entity.is_a(),
+                    'name': getattr(entity, 'Name', None),
+                    'globalId': getattr(entity, 'GlobalId', None),
+                    'properties': {}
+                }
+
+                # 1. Extract all direct attributes
+                for attribute in entity.get_info().keys():
+                    try:
+                        value = getattr(entity, attribute)
+                        if value is not None:
+                            element_data['properties'][attribute] = {
+                                'value': str(value),
+                                'type': type(value).__name__
+                            }
+                    except:
+                        continue
+
+                # 2. Extract property sets (Psets)
+                if entity.is_a('IfcObject'):
+                    for definition in entity.IsDefinedBy:
+                        if definition.is_a('IfcRelDefinesByProperties'):
+                            pset = definition.RelatingPropertyDefinition
+                            if pset.is_a('IfcPropertySet'):
+                                for prop in pset.HasProperties:
+                                    if prop.is_a('IfcPropertySingleValue'):
+                                        element_data['properties'][f"{pset.Name}.{prop.Name}"] = {
+                                            'value': str(prop.NominalValue.wrappedValue) if prop.NominalValue else None,
+                                            'type': prop.NominalValue.is_a() if prop.NominalValue else None,
+                                            'unit': str(prop.Unit) if hasattr(prop, 'Unit') else None
+                                        }
+
+                # 3. Extract quantities
+                for definition in entity.IsDefinedBy:
+                    if definition.is_a('IfcRelDefinesByProperties'):
+                        qset = definition.RelatingPropertyDefinition
+                        if qset.is_a('IfcElementQuantity'):
+                            for quantity in qset.Quantities:
+                                if hasattr(quantity, 'Name'):
+                                    element_data['properties'][f"{qset.Name}.{quantity.Name}"] = {
+                                        'value': getattr(quantity, quantity.is_a()[3:], None),
+                                        'type': quantity.is_a(),
+                                        'unit': str(quantity.Unit) if hasattr(quantity, 'Unit') else None
+                                    }
+
+                # 4. Extract material information
+                if hasattr(entity, 'HasAssociations'):
+                    for association in entity.HasAssociations:
+                        if association.is_a('IfcRelAssociatesMaterial'):
+                            material = association.RelatingMaterial
+                            if material.is_a('IfcMaterial'):
+                                element_data['properties']['Material'] = {
+                                    'value': material.Name,
+                                    'type': 'IfcMaterial'
+                                }
+
+                elements.append(element_data)
+
+        return {
+            'elements': elements,
+            'file_info': {
+                'schema': ifc.schema,
+                'header': ifc.header
+            }
+        }
 
 
 def check_ifcopenshell_installation() -> bool:

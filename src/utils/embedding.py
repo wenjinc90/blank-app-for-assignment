@@ -40,8 +40,20 @@ class EmbeddingProcessor:
         if not self.api_key:
             raise ValueError("API key not set. Call set_api_key first.")
 
+        # Enhance text descriptions with additional context
+        enhanced_texts = []
+        for text in texts:
+            # Add more context for walls
+            if "IfcWall" in text:
+                # Include keywords that might help identify loadbearing walls
+                context = " This wall has properties that may indicate if it's loadbearing: "
+                context += text
+                enhanced_texts.append(context)
+            else:
+                enhanced_texts.append(text)
+
         embeddings = []
-        for i, text in enumerate(texts):
+        for i, text in enumerate(enhanced_texts):
             response = openai.embeddings.create(
                 input=text,
                 model=self.model
@@ -52,7 +64,7 @@ class EmbeddingProcessor:
                 progress_callback((i + 1) / len(texts))
 
         self.embeddings = embeddings
-        self.texts = texts
+        self.texts = texts  # Store original texts
         return embeddings
 
     def find_most_similar(self, query: str) -> Dict[str, Any]:
@@ -60,7 +72,7 @@ class EmbeddingProcessor:
         return self.find_top_similar(query, top_k=1)[0]
 
     def find_top_similar(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Find the top K most similar texts to a query."""
+        """Find exactly K most similar texts, regardless of similarity score."""
         if not self.embeddings or not self.texts:
             raise ValueError("No embeddings generated yet. Call generate_embeddings first.")
 
@@ -91,11 +103,15 @@ class EmbeddingProcessor:
         
         return results
     
-    def find_top_similar(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-        """Find the top K most similar texts to a query."""
+    def find_similar_by_threshold(self, query: str, threshold: float = 0.7) -> List[Dict[str, Any]]:
+        """Find all texts with similarity above the given threshold."""
         if not self.embeddings or not self.texts:
-            raise ValueError("No embeddings generated yet. Call generate_embeddings first.")
-
+            raise ValueError("No embeddings or texts found. Please generate embeddings first.")
+            
+        # Debug print
+        print(f"Number of embeddings: {len(self.embeddings)}")
+        print(f"Number of texts: {len(self.texts)}")
+        
         query_response = openai.embeddings.create(
             input=query,
             model=self.model
@@ -103,22 +119,23 @@ class EmbeddingProcessor:
         query_embedding = np.array(query_response.data[0].embedding)
         doc_embeddings = np.array(self.embeddings)
         
-        # Calculate similarities using dot product and normalization
+        # Calculate similarities
         similarities = np.dot(doc_embeddings, query_embedding) / (
             np.linalg.norm(doc_embeddings, axis=1) * np.linalg.norm(query_embedding) + 1e-8
         )
         
-        # Get top K indices
-        top_indices = np.argsort(similarities)[::-1][:top_k]
-        
+        # Filter by threshold and sort by similarity
         results = []
-        for idx in top_indices:
-            results.append({
-                'text': self.texts[idx],
-                'similarity_score': float(similarities[idx]),
-                'index': int(idx)
-            })
+        for idx, score in enumerate(similarities):
+            if score >= threshold:
+                results.append({
+                    'text': self.texts[idx],
+                    'similarity_score': float(score),
+                    'index': int(idx)
+                })
         
+        # Sort by similarity score (highest first)
+        results.sort(key=lambda x: x['similarity_score'], reverse=True)
         return results
 
     @classmethod

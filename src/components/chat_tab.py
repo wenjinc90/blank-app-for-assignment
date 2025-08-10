@@ -1,5 +1,6 @@
 import streamlit as st
 import openai
+from typing import List, Dict, Any
 
 class ChatTab:
     @staticmethod
@@ -19,79 +20,76 @@ class ChatTab:
     def _show_chat_interface(embedding_processor):
         """Show the chat interface."""
         st.markdown("### 🔍 Building Element Search")
-        st.markdown("---")
         
-        # Clear chat button in a more prominent position
-        col1, col2 = st.columns([6, 1])
-        with col1:
-            st.markdown("#### Ask questions about your building elements:")
-        with col2:
-            if st.button("🗑️ Clear Chat", type="secondary", use_container_width=True):
-                st.session_state.chat_history = []
-                st.rerun()
-        
-        st.markdown("---")
+        # Add threshold slider
+        threshold = st.slider(
+            "Similarity Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.3,  # Default value lowered to 0.3
+            step=0.01,
+            help="Adjust this value to control how similar elements need to be to appear in results. Lower values will return more results."
+        )
         
         # Initialize chat history
-        if 'chat_history' not in st.session_state:
+        if "chat_history" not in st.session_state:
             st.session_state.chat_history = []
         
-        # Display chat history
+        # Show chat history
         for message in st.session_state.chat_history:
-            if message['role'] == 'user':
-                st.chat_message("user").write(message['content'])
-            else:
-                st.chat_message("assistant").write(message['content'])
+            st.chat_message(message["role"]).write(message["content"])
         
-        # User input
-        user_query = st.chat_input("Enter your question:")
+        # Get user input
+        user_query = st.chat_input("Ask about the building elements...")
         
         if user_query:
-            # Add user message to history
             st.session_state.chat_history.append({
-                'role': 'user',
-                'content': user_query
+                "role": "user",
+                "content": user_query
             })
             
-            # Display user message
             st.chat_message("user").write(user_query)
             
             with st.spinner("Thinking..."):
                 try:
-                    # Find top 3 relevant building elements for better context
-                    top_results = embedding_processor.find_top_similar(user_query, top_k=3)
-                    
-                    # Generate conversational response using OpenAI Chat API
-                    response = ChatTab._generate_chat_response(
-                        user_query, 
-                        top_results, 
-                        st.session_state.get('api_key')
+                    # Get initial results based on similarity
+                    relevant_results = embedding_processor.find_similar_by_threshold(
+                        user_query,
+                        threshold=threshold
                     )
                     
-                    # Add assistant response to history
+                    # Filter results by type
+                    filtered_results = ChatTab._filter_results_by_type(relevant_results, user_query)
+                    
+                    response = ChatTab._generate_chat_response(
+                        user_query,
+                        filtered_results,  # Pass filtered results to chat
+                        st.session_state.get("api_key")
+                    )
+                    
                     st.session_state.chat_history.append({
-                        'role': 'assistant',
-                        'content': response
+                        "role": "assistant",
+                        "content": response
                     })
                     
-                    # Display assistant response
                     st.chat_message("assistant").write(response)
                     
-                    # Show expandable section with detailed search results
+                    # Show filtered search details
                     with st.expander("🔍 Search Details", expanded=False):
-                        st.write("**Top matching elements:**")
-                        for i, result in enumerate(top_results, 1):
+                        st.write(f"**Found {len(filtered_results)} relevant elements:**")
+                        for i, result in enumerate(filtered_results, 1):
                             st.write(f"**{i}.** Score: {result['similarity_score']:.3f}")
-                            st.code(result['text'], language=None)
-                    
+                            # Show all data instead of just type, ID, and name
+                            st.code(result['text'])  # Display the full text with all parameters
+
                 except Exception as e:
                     error_msg = f"Error processing query: {str(e)}"
                     st.error(error_msg)
                     st.session_state.chat_history.append({
-                        'role': 'assistant',
-                        'content': error_msg
+                        "role": "assistant",
+                        "content": error_msg
                     })
-    
+
     @staticmethod
     def _generate_chat_response(user_query, search_results, api_key):
         """Generate a conversational response using OpenAI Chat API."""
@@ -108,17 +106,40 @@ class ChatTab:
         # Set up OpenAI client
         client = openai.OpenAI(api_key=api_key)
         
-        # Create context from search results
+        # Create context from search results with simplified information
         if isinstance(search_results, list):
             # Multiple results
             context_parts = []
             for i, result in enumerate(search_results, 1):
-                context_parts.append(f"Element {i} (Similarity: {result['similarity_score']:.2f}): {result['text']}")
+                # Extract only type, ID, and name from the full text
+                text = result['text']
+                element_type = ""
+                element_id = ""
+                element_name = ""
+                
+                # Parse the text to extract key information
+                parts = text.split(" | ")
+                for part in parts:
+                    if "Element Type:" in part:
+                        element_type = part
+                    elif "ID:" in part:
+                        element_id = part
+                    elif "Name:" in part:
+                        element_name = part
+                
+                # Create simplified context
+                simplified_text = f"{element_type} | {element_id} | {element_name}".strip(" | ")
+                context_parts.append(f"Element {i} (Similarity: {result['similarity_score']:.2f}): {simplified_text}")
+            
             context = "\n\n".join(context_parts)
             best_score = search_results[0]['similarity_score'] if search_results else 0
         else:
             # Single result (backward compatibility)
-            context = f"Element Details: {search_results['text']}"
+            text = search_results['text']
+            parts = text.split(" | ")
+            simplified_parts = [p for p in parts if any(key in p for key in ["Element Type:", "ID:", "Name:"])]
+            simplified_text = " | ".join(simplified_parts)
+            context = f"Element Details: {simplified_text}"
             best_score = search_results['similarity_score']
         
         # Create system prompt
@@ -193,3 +214,39 @@ Please provide a natural, conversational response that explains the relevant bui
         except Exception as e:
             fallback_text = context if isinstance(search_results, str) else search_results[0]['text'] if search_results else "No data found"
             return f"Error generating response: {str(e)}. Here's the raw data I found: {fallback_text}"
+    
+    @staticmethod
+    def _filter_results_by_type(results: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+        """Filter results to only show elements of the requested type."""
+        # Map common terms to IFC types
+        type_mapping = {
+            'door': 'IfcDoor',
+            'wall': 'IfcWall',
+            'window': 'IfcWindow',
+            'slab': 'IfcSlab',
+            'beam': 'IfcBeam',
+            'column': 'IfcColumn',
+            'stair': 'IfcStair',
+            'roof': 'IfcRoof',
+            'curtain wall': 'IfcCurtainWall'
+        }
+        
+        # Find requested type from query
+        query_lower = query.lower()
+        requested_type = None
+        for term, ifc_type in type_mapping.items():
+            if term in query_lower:
+                requested_type = ifc_type
+                break
+        
+        if not requested_type:
+            return results  # Return all results if no specific type requested
+        
+        # Filter results to only include elements of the requested type
+        filtered_results = [
+            result for result in results 
+            if requested_type in result['text'].split(' | ')[0]  # Check first part which contains Element Type
+        ]
+        
+        return filtered_results
+
